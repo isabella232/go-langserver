@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/types"
+	"hash/fnv"
 	"io/ioutil"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru"
 	"golang.org/x/tools/go/internal/packagesdriver"
 	"golang.org/x/tools/internal/gopathwalk"
 	"golang.org/x/tools/internal/semver"
@@ -91,7 +93,7 @@ func goListDriver(cfg *Config, patterns ...string) (*driverResponse, error) {
 	var rootDirs map[string]string
 	var rootDirsReady = make(chan struct{})
 	go func() {
-		rootDirs = determineRootDirs(cfg)
+		rootDirs = determineRootDirsLRUCached(cfg)
 		close(rootDirsReady)
 	}()
 	getRootDirs := func() map[string]string {
@@ -101,7 +103,7 @@ func goListDriver(cfg *Config, patterns ...string) (*driverResponse, error) {
 
 	// always pass getRootDirs to golistDriver
 	golistDriver := func(cfg *Config, patterns ...string) (*driverResponse, error) {
-		return golistDriver(cfg, getRootDirs, patterns...)
+		return golistDriverLRUCached(cfg, getRootDirs, patterns...)
 	}
 
 	// Determine files requested in contains patterns
@@ -595,6 +597,36 @@ type jsonPackageError struct {
 
 func otherFiles(p *jsonPackage) [][]string {
 	return [][]string{p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.FFiles, p.SFiles, p.SwigFiles, p.SwigCXXFiles, p.SysoFiles}
+}
+
+type goListResult struct {
+	response *driverResponse
+	err      error
+}
+
+var (
+	goListLRUCache       *lru.Cache
+	createGoListLRUCache sync.Once
+	goListLRUEntries     = 16 * 32
+)
+
+func golistDriverLRUCached(cfg *Config, rootsDirs func() map[string]string, words ...string) (*driverResponse, error) {
+	createGoListLRUCache.Do(func() {
+		goListLRUCache, _ = lru.New(goListLRUEntries)
+	})
+
+	h := fnv.New32a()
+	h.Write([]byte(cfg.Dir))
+	h.Write([]byte(words[len(words)-1]))
+	hashKey := h.Sum32()
+	if val, ok := goListLRUCache.Get(hashKey); ok {
+		res := val.(goListResult)
+		return res.response, res.err
+	} else {
+		res, err := golistDriver(cfg, rootsDirs, words...)
+		goListLRUCache.Add(hashKey, goListResult{res, err})
+		return res, err
+	}
 }
 
 // golistDriver uses the "go list" command to expand the pattern

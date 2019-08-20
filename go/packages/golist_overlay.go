@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/hashicorp/golang-lru"
 )
 
 // processGolistOverlay provides rudimentary support for adding
@@ -192,6 +195,30 @@ func hasTestFiles(p *Package) bool {
 		}
 	}
 	return false
+}
+
+type determineRootDirsResult struct {
+	roots map[string]string
+}
+
+var (
+	determineRootDirsLRUCache *lru.Cache
+	createRootLRUCache        sync.Once
+	rootLRUEntries            = 16
+)
+
+func determineRootDirsLRUCached(cfg *Config) map[string]string {
+	createRootLRUCache.Do(func() {
+		determineRootDirsLRUCache, _ = lru.New(rootLRUEntries)
+	})
+	if val, ok := determineRootDirsLRUCache.Get(cfg.Dir); ok {
+		res := val.(determineRootDirsResult)
+		return res.roots
+	} else {
+		roots := determineRootDirs(cfg)
+		determineRootDirsLRUCache.Add(cfg.Dir, determineRootDirsResult{roots})
+		return roots
+	}
 }
 
 // determineRootDirs returns a mapping from directories code can be contained in to the

@@ -24,6 +24,7 @@ env:
 before_install:
   - go get golang.org/x/sync/errgroup
   - go get golang.org/x/xerrors
+  - go get github.com/hashicorp/golang-lru
 
 matrix:
   fast_finish: true
